@@ -45,7 +45,7 @@ class ContextualAIRisk(BaseModel):
 
 
 class AISpecificRequirement(BaseModel):
-    """An actionable contextual requirement addressing inferred AI risks."""
+    """An implementable system-level control addressing contextual AI risks."""
 
     model_config = ConfigDict(extra="forbid")
 

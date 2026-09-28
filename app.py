@@ -8,6 +8,7 @@ from src.app_support import (
     input_from_form, run_analysis, traceability_csv, traceability_rows,
 )
 from src.config import OPENAI_API_KEY
+from src.ai_task_catalog import AI_TASK_CATALOG, tasks_for_group, validate_catalog_selection
 
 
 st.set_page_config(page_title="US4AI | NIST-grounded requirements", layout="wide")
@@ -57,7 +58,7 @@ def show_results(result):
         if not result.get("contextual_risks"):
             st.info("No supported contextual risks are available. This is not a risk-free assessment.")
     with requirements_tab:
-        st.caption("Risk-informed requirements may address the system, governance, human oversight, monitoring, or project processes.")
+        st.caption("Model-derived system-level controls grounded in the scenario and NIST evidence to address contextual AI risks. These are not NIST requirements.")
         for requirement in result.get("ai_requirements", []):
             st.subheader(requirement.requirement_id)
             st.write(requirement.statement)
@@ -95,23 +96,49 @@ except Exception as error:
 if not OPENAI_API_KEY:
     st.warning("Generation requires OPENAI_API_KEY in the environment or project .env file. Configure it and restart the application.")
 
-with st.form("analysis_input"):
+def add_task_row():
+    row_id = st.session_state["next_task_row"]
+    st.session_state["task_rows"].append(row_id)
+    st.session_state["next_task_row"] += 1
+
+
+def remove_task_row(row_id):
+    st.session_state["task_rows"] = [item for item in st.session_state["task_rows"] if item != row_id]
+
+
+if "task_rows" not in st.session_state:
+    st.session_state["task_rows"] = [0]
+    st.session_state["next_task_row"] = 1
+
+# Selectors stay outside a form so each Group change updates its dependent tasks.
+with st.container():
     purpose = st.text_area("System Purpose", help="Required: describe what the system is intended to do.")
     story = st.text_area("User Story", help="Required: describe the stakeholder need.")
     criteria = st.text_area("Acceptance Criteria (optional, one per line)")
     st.write("AI Tasks (at least one)")
-    tasks = st.data_editor(
-        [{"category": "", "task": ""}], num_rows="dynamic", hide_index=True,
-        column_config={
-            "category": st.column_config.TextColumn("Category", help="Use your own category; no fixed taxonomy."),
-            "task": st.column_config.TextColumn("Task", help="Describe the AI task."),
-        }, key="ai_tasks_editor", width="stretch",
-    )
-    submitted = st.form_submit_button("Run analysis", disabled=not bool(OPENAI_API_KEY))
+    tasks = []
+    for position, row_id in enumerate(st.session_state["task_rows"], start=1):
+        group_column, task_column, remove_column = st.columns([2, 3, 1])
+        group = group_column.selectbox(
+            f"Group {position}", list(AI_TASK_CATALOG), index=None,
+            placeholder="Select a Group", key=f"task_group_{row_id}",
+        )
+        task = task_column.selectbox(
+            f"AI Task {position}", tasks_for_group(group), index=None,
+            placeholder="Select an AI Task", disabled=group is None,
+            key=f"task_value_{row_id}_{group}",
+        )
+        remove_column.button("Remove", key=f"remove_task_{row_id}",
+            disabled=len(st.session_state["task_rows"]) == 1,
+            on_click=remove_task_row, args=(row_id,))
+        tasks.append({"category": group, "task": task})
+    st.button("Add AI Task", key="add_ai_task", on_click=add_task_row)
+    submitted = st.button("Run analysis", key="run_analysis", disabled=not bool(OPENAI_API_KEY))
 
 if submitted:
     st.session_state.pop("analysis_result", None)
     try:
+        validate_catalog_selection(tasks)
         scenario = input_from_form(purpose, story, criteria, tasks)
     except ValidationError as error:
         labels = {"system_purpose": "System Purpose", "user_story": "User Story", "ai_tasks": "AI Tasks"}
@@ -121,6 +148,8 @@ if submitted:
             if location[0] == "ai_tasks" and len(location) > 2:
                 label += f" row {location[1] + 1}, {location[2]}"
             st.error(f"{label}: provide a non-empty value (at least one complete category/task row is required).")
+    except ValueError as error:
+        st.error(str(error))
     else:
         try:
             with st.spinner("Retrieving NIST evidence, inferring contextual risks, and deriving requirements..."):

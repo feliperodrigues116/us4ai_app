@@ -1,5 +1,7 @@
 """Deterministic reference validation for generated analysis artifacts."""
 
+import re
+
 from src.nist_evidence import RetrievedNistEvidence
 from src.schemas import AITask, AISpecificRequirement, ContextualAIRisk, US4AIAnalysisInput
 
@@ -18,6 +20,8 @@ def _unique(values: list[str], label: str) -> set[str]:
 def _references(values: list[str], allowed: set[str], label: str) -> None:
     if not values:
         raise ValueError(f"{label} references must not be empty.")
+    if len(values) != len(set(values)):
+        raise ValueError(f"Duplicate {label} references are not allowed.")
     unknown = set(values) - allowed
     if unknown:
         raise ValueError(f"Unknown {label} references: {', '.join(sorted(unknown))}")
@@ -50,3 +54,15 @@ def validate_ai_requirements(
         _references(requirement.risk_ids, risk_ids, "contextual risk")
         _references(requirement.ai_task_ids, task_ids, "AI task")
         _references(requirement.evidence_ids, evidence_ids, "NIST evidence")
+
+        addressed_tasks = {
+            task for risk in risks if risk.risk_id in requirement.risk_ids
+            for task in risk.ai_task_ids
+        }
+        if not set(requirement.ai_task_ids).issubset(addressed_tasks):
+            raise ValueError("Requirement AI tasks must be associated with its addressed contextual risks.")
+        if re.match(
+            r"^\s*(?:the\s+)?(?:organization|organisation|project team|stakeholders|management|developers)\b",
+            requirement.statement, re.IGNORECASE,
+        ):
+            raise ValueError("Requirement statement must specify a system-level control, not an organizational recommendation.")

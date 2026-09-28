@@ -52,7 +52,7 @@ def risk():
 def requirement():
     return AISpecificRequirement(
         requirement_id="REQ-01",
-        statement="The project team shall document applicable privacy obligations for AI-generated billing responses.",
+        statement="The system shall require agent approval before sending AI-generated billing responses.",
         risk_ids=["R-01"], ai_task_ids=["TASK-01"], evidence_ids=["GOVERN 1.1"],
         rationale="The scenario involves customer information; documenting applicable obligations supports managing the inferred disclosure risk.",
     )
@@ -102,7 +102,7 @@ class GenerationTests(unittest.TestCase):
         self.assertEqual(context["scenario"], scenario().model_dump())
         self.assertEqual(context["contextual_risk_inferences"], [risk().model_dump()])
         self.assertTrue(context["nist_source_evidence"][0]["section_actions"])
-        self.assertIn("do not force software-only statements", messages[0]["content"])
+        self.assertIn("system-level control", messages[0]["content"])
         self.assertIn("Do not invent technologies", messages[0]["content"])
 
     def test_risk_unknown_references_and_duplicate_ids_fail_after_generation(self):

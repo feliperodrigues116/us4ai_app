@@ -12,7 +12,7 @@ These are three distinct artifacts:
 
 - **NIST evidence:** retrieved source guidance.
 - **Contextual AI risk:** a model-generated inference about the supplied scenario, grounded in that guidance. It is not a direct NIST risk statement.
-- **AI-specific requirement:** an actionable derivation addressing contextual risks, justified by the scenario and NIST evidence. It may concern software, governance, human oversight, monitoring, documentation, or organizational processes.
+- **AI-specific requirement:** an actionable derivation addressing contextual risks, justified by the scenario and NIST evidence. It specifies an implementable system-level control, constraint, mechanism, or behavior; organizational recommendations alone are not requirements.
 
 Reference validation is deterministic; semantic correctness and scientific quality still require review.
 
@@ -25,7 +25,7 @@ The UI constructs the existing `US4AIAnalysisInput` contract:
 - Zero or more Acceptance Criteria, entered one per line.
 - One or more AI Tasks, each with a nonblank `category` and `task`.
 
-Task categories are free text. Add or remove task rows in the editor; entirely blank rows are ignored and incomplete rows are rejected. Task references (`TASK-01`, `TASK-02`, etc.) follow input order within each analysis. Reordering tasks changes these references.
+The study UI uses the exact version-controlled vocabulary in `src/ai_task_catalog.py`. Add rows containing dependent Group and AI Task dropdowns; duplicate pairs and incomplete selections are rejected. The backend `AITask` schema remains open to programmatic category/task strings. Task references (`TASK-01`, `TASK-02`, etc.) follow input order within each analysis. Reordering tasks changes these references.
 
 ## Knowledge and retrieval
 
@@ -46,9 +46,9 @@ Structured `RetrievedNistEvidence` preserves title, function, category, retrieva
 
 LangGraph runs `retrieve_nist_evidence` → `infer_contextual_risks` → `derive_ai_requirements`. Generation uses OpenAI + Instructor with Pydantic outputs, `gpt-4o-mini`, temperature 0, Instructor `max_retries=1`, and SDK `max_retries=0`.
 
-Prompts distinguish SOURCE, INFERENCE, and DERIVATION. They provide the complete scenario and selected substantive fields of the retrieved source records, including documentation questions. Reference bibliographies are not treated as guidance, and repeated retrieval text is omitted from generation context. Prompts prohibit fabricated quotations and unsupported implementation details.
+Prompts distinguish SOURCE, INFERENCE, and DERIVATION. They provide the complete scenario and selected substantive fields of the retrieved source records, including documentation questions. Reference bibliographies are not treated as guidance, and repeated retrieval text is omitted from generation context. Prompts prohibit fabricated quotations and unsupported implementation details. Retrieval relevance alone does not justify a risk: descriptions must explain concrete scenario-to-harm connections, and retrieved evidence may remain unused. Requirements translate supported risks into system-level controls rather than paraphrasing Suggested Actions.
 
-Deterministic validation rejects duplicate risk/requirement IDs, empty required references, unknown tasks, unknown evidence, and unknown addressed risks. It does not silently repair invalid references. The traceability table contains only explicit edges from the validated outputs: task/risk, evidence/risk, risk/requirement, task/requirement, and evidence/requirement. It does not invent direct task/evidence relationships or combinations of independent references.
+Deterministic validation rejects duplicate risk/requirement IDs, empty required references, unknown tasks, unknown evidence, and unknown addressed risks. It does not silently repair invalid references. Duplicate references and requirement task links outside the addressed risks are rejected. A narrow statement-subject check rejects explicit organization/project-team/stakeholder/management/developer recommendations; it is not a semantic proof of implementability. The traceability table contains only explicit edges from the validated outputs: task/risk, evidence/risk, risk/requirement, task/requirement, and evidence/requirement. It does not invent direct task/evidence relationships or combinations of independent references.
 
 The graph distinguishes no evidence, no sufficiently supported risks, and no justified requirements. None establishes that the scenario is risk-free. The UI preserves validated earlier stages if a later stage fails.
 

@@ -160,7 +160,7 @@ class StreamlitIntegrationTests(unittest.TestCase):
             self.assertEqual([item.label for item in app.text_area], ["System Purpose", "User Story", "Acceptance Criteria (optional, one per line)"])
             app.run()
             initialize.assert_called_once()
-            app.button[0].click().run()
+            app.button(key="run_analysis").click().run()
             self.assertGreater(len(app.error), 0)
             self.assertEqual(len(app.exception), 0)
 
@@ -174,7 +174,9 @@ class StreamlitIntegrationTests(unittest.TestCase):
              patch("src.app_support.input_from_form", return_value=scenario()), \
              patch("src.config.OPENAI_API_KEY", "offline-test-placeholder"):
             app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py"), default_timeout=30).run()
-            app.button[0].click().run()
+            app.selectbox(key="task_group_0").select("Natural Language Processing").run()
+            app.selectbox(key="task_value_0_Natural Language Processing").select("Text Generation").run()
+            app.button(key="run_analysis").click().run()
             self.assertEqual(len(app.exception), 0)
             self.assertEqual(len(app.tabs), 4)
             self.assertEqual(app.session_state["analysis_result"]["status"], "complete")
