@@ -1,78 +1,86 @@
-import instructor
-from openai import OpenAI
-from src.schemas import OutputRisks, OutputRequirements
-from src.retriever import HybridRetriever
-from src.config import OPENAI_API_KEY
+"""Retrieval, contextual inference, and requirement derivation nodes."""
 
-# Usamos o instructor para garantir as respostas estruturadas Pydantic nativamente
-client = instructor.from_openai(OpenAI(api_key=OPENAI_API_KEY))
+from src.config import OPENAI_API_KEY, OPENAI_MODEL
+from src.graph.prompts import build_requirement_messages, build_risk_messages
+from src.graph.state import US4AIState
+from src.retriever import NistVectorRetriever, build_retrieval_query
+from src.schemas import AIRequirementsOutput, ContextualRisksOutput, US4AIAnalysisInput
+from src.traceability import reference_ai_tasks, validate_ai_requirements, validate_contextual_risks
 
-def risk_identification_node(state: dict) -> dict:
-    """Nó 2: Recupera catálogos e identifica riscos ancorados no conhecimento."""
-    story = state.get("description", "")
-    criteria = "\n".join(state.get("acceptance_criteria", []))
-    
-    query = f"{story}\n{criteria}"
-    retriever = HybridRetriever()
-    retrieved_docs = retriever.get_relevant_knowledge(query, top_k=5)
-    
-    if not retrieved_docs:
-        return {"retrieved_docs": [], "identified_risks": []}
 
-    context = "\n".join([str(doc) for doc in retrieved_docs])
-    
-    prompt = f"""
-    Based ONLY on the retrieved knowledge items below, identify AI risks for this User Story.
-    You MUST NOT invent risks. You MUST map your risks explicitly to the knowledge_item_id provided.
-    Story: {story}
-    Criteria: {criteria}
-    
-    Knowledge Items: 
-    {context}
-    """
-    
-    response = client.chat.completions.create(
-         model="gpt-4o-mini",
-         response_model=OutputRisks,
-         messages=[{"role": "user", "content": prompt}]
-    )
-    
-    # Validação anti-alucinação rudimentar
-    valid_ids = {doc.get("knowledge_item_id") for doc in retrieved_docs}
-    risks_dict = []
-    
-    for risk in response.identified_risks:
-        valid_sources = [s for s in risk.grounded_in if s.knowledge_item_id in valid_ids]
-        if valid_sources:
-            risk.grounded_in = valid_sources
-            risks_dict.append(risk.model_dump())
-            
+def create_generation_client():
+    """Create an Instructor client only when a generation stage needs it."""
+    if not OPENAI_API_KEY:
+        raise ValueError("OPENAI_API_KEY is required for contextual generation.")
+    import instructor
+    from openai import OpenAI
+
+    return instructor.from_openai(OpenAI(api_key=OPENAI_API_KEY, max_retries=0))
+
+
+def retrieve_nist_evidence(state: US4AIState, *, retriever=None) -> dict:
+    """Retrieve unchanged NIST evidence and resolve its complete source records."""
+    scenario = US4AIAnalysisInput.model_validate(state["analysis_input"])
+    query = build_retrieval_query(scenario)
+    retriever = retriever if retriever is not None else NistVectorRetriever()
+    evidence = retriever.retrieve(scenario)
+    if len({item.evidence_id for item in evidence}) != len(evidence):
+        raise ValueError("Duplicate retrieved NIST evidence IDs are not allowed.")
+    records = {item.evidence_id: item.resolve_record() for item in evidence}
     return {
-        "retrieved_docs": retrieved_docs,
-        "identified_risks": risks_dict
+        "analysis_input": scenario,
+        "ai_task_references": reference_ai_tasks(scenario),
+        "retrieval_query": query,
+        "retrieved_evidence": evidence,
+        "nist_records": records,
+        "contextual_risks": [],
+        "ai_requirements": [],
+        "status": "evidence_retrieved" if evidence else "no_evidence",
+        "status_message": "NIST evidence retrieved." if evidence else
+            "No NIST evidence was retrieved; generation was skipped. No risk-free conclusion can be drawn.",
     }
 
-def requirement_derivation_node(state: dict) -> dict:
-    """Nó 3: Deriva requisitos formais a partir dos riscos mapeados."""
-    story = state.get("description", "")
-    risks = state.get("identified_risks", [])
-    
-    if not risks:
-         return {"derived_requirements": []}
-         
-    prompt = f"""
-    Derive specific AI requirements to mitigate the identified risks below.
-    Each requirement MUST start with "The system shall...".
-    Story: {story}
-    Risks: {risks}
-    """
-    
+
+def infer_contextual_risks(state: US4AIState, *, client=None) -> dict:
+    """Generate contextual inferences, then enforce reference integrity."""
+    if not state["retrieved_evidence"]:
+        raise ValueError("Contextual risk inference requires retrieved NIST evidence.")
+    messages = build_risk_messages(state["analysis_input"], state["retrieved_evidence"], state["nist_records"])
+    client = client if client is not None else create_generation_client()
     response = client.chat.completions.create(
-         model="gpt-4o-mini",
-         response_model=OutputRequirements,
-         messages=[{"role": "user", "content": prompt}]
+        model=OPENAI_MODEL, temperature=0, max_retries=1,
+        response_model=ContextualRisksOutput, messages=messages,
     )
-    
-    reqs_dict = [req.model_dump() for req in response.derived_ai_requirements]
-    
-    return {"derived_requirements": reqs_dict}
+    output = ContextualRisksOutput.model_validate(response)
+    risks = output.contextual_risks
+    validate_contextual_risks(risks, state["analysis_input"], state["retrieved_evidence"])
+    return {
+        "contextual_risks": risks,
+        "status": "risks_inferred" if risks else "no_supported_risks",
+        "status_message": "Contextual risks inferred from scenario and NIST evidence." if risks else
+            "No sufficiently supported contextual risks were inferred. This does not mean the system is risk-free.",
+    }
+
+
+def derive_ai_requirements(state: US4AIState, *, client=None) -> dict:
+    """Derive requirements from scenario, inferred risks, and original evidence."""
+    risks = state["contextual_risks"]
+    if not risks:
+        raise ValueError("Requirement derivation requires contextual risks.")
+    validate_contextual_risks(risks, state["analysis_input"], state["retrieved_evidence"])
+    messages = build_requirement_messages(
+        state["analysis_input"], state["retrieved_evidence"], state["nist_records"], risks,
+    )
+    client = client if client is not None else create_generation_client()
+    response = client.chat.completions.create(
+        model=OPENAI_MODEL, temperature=0, max_retries=1,
+        response_model=AIRequirementsOutput, messages=messages,
+    )
+    requirements = AIRequirementsOutput.model_validate(response).ai_requirements
+    validate_ai_requirements(requirements, risks, state["analysis_input"], state["retrieved_evidence"])
+    return {
+        "ai_requirements": requirements,
+        "status": "complete" if requirements else "no_requirements",
+        "status_message": "Requirements derived with validated references." if requirements else
+            "Contextual risks were inferred, but no justified requirements were derived. Review is needed.",
+    }

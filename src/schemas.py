@@ -1,35 +1,8 @@
+"""Scenario inputs and distinct contextual-risk and requirement contracts."""
+
+from typing import Annotated
+
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
-from typing import Annotated, List
-
-class KnowledgeSource(BaseModel):
-    knowledge_item_id: str
-    source_name: str
-    source_section: str
-    category: str
-
-class IdentifiedRisk(BaseModel):
-    risk_id: str
-    risk_label: str
-    description: str
-    grounded_in: List[KnowledgeSource] = Field(default_factory=list)
-
-class DerivedRequirement(BaseModel):
-    requirement_id: str
-    title: str
-    statement: str = Field(description="Must start with 'The system shall...'")
-    rationale: str
-    category: str
-    mitigates_risks: List[str] = Field(description="List of risk_ids this requirement mitigates")
-    sources: List[KnowledgeSource] = Field(default_factory=list)
-
-class OutputRequirements(BaseModel):
-    story_id: str
-    context_summary: str
-    derived_ai_requirements: List[DerivedRequirement] = Field(default_factory=list)
-
-class OutputRisks(BaseModel):
-    story_id: str
-    identified_risks: List[IdentifiedRisk] = Field(default_factory=list)
 
 
 NonEmptyInputText = Annotated[str, StringConstraints(strict=True, min_length=1, pattern=r"\S")]
@@ -53,3 +26,46 @@ class US4AIAnalysisInput(BaseModel):
     user_story: NonEmptyInputText
     acceptance_criteria: list[str] = Field(default_factory=list)
     ai_tasks: list[AITask] = Field(min_length=1)
+
+
+RiskId = Annotated[str, StringConstraints(pattern=r"^R-[0-9]{2,}$")]
+RequirementId = Annotated[str, StringConstraints(pattern=r"^REQ-[0-9]{2,}$")]
+
+
+class ContextualAIRisk(BaseModel):
+    """A scenario-specific inference supported by NIST, not a NIST statement."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    risk_id: RiskId
+    title: NonEmptyInputText
+    description: NonEmptyInputText
+    ai_task_ids: list[NonEmptyInputText] = Field(min_length=1)
+    evidence_ids: list[NonEmptyInputText] = Field(min_length=1)
+
+
+class AISpecificRequirement(BaseModel):
+    """An actionable contextual requirement addressing inferred AI risks."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    requirement_id: RequirementId
+    statement: NonEmptyInputText
+    risk_ids: list[RiskId] = Field(min_length=1)
+    ai_task_ids: list[NonEmptyInputText] = Field(min_length=1)
+    evidence_ids: list[NonEmptyInputText] = Field(min_length=1)
+    rationale: NonEmptyInputText
+
+
+class ContextualRisksOutput(BaseModel):
+    """An empty list means no sufficiently supported risks were inferred."""
+
+    model_config = ConfigDict(extra="forbid")
+    contextual_risks: list[ContextualAIRisk]
+
+
+class AIRequirementsOutput(BaseModel):
+    """An empty list means no justified requirements were derived."""
+
+    model_config = ConfigDict(extra="forbid")
+    ai_requirements: list[AISpecificRequirement]
