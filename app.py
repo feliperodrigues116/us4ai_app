@@ -1,94 +1,133 @@
+"""Streamlit interface for the NIST-grounded US4AI research prototype."""
+
 import streamlit as st
-import pandas as pd
-import sys
-import os
-import pysqlite3
+from pydantic import ValidationError
 
-sys.modules["sqlite3"] = pysqlite3
+from src.app_support import (
+    AnalysisExecutionError, STATUS_MESSAGES, analysis_export, initialize_analysis_graph,
+    input_from_form, run_analysis, traceability_csv, traceability_rows,
+)
+from src.config import OPENAI_API_KEY
 
-# Adiciona o diretório base no path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from src.graph.workflow import build_us4ai_graph
-from src.ingestion import prepare_nist_documents
+st.set_page_config(page_title="US4AI | NIST-grounded requirements", layout="wide")
 
-# --- LLM Guard Configuration ---
-try:
-    from llm_guard.input_scanners import PromptInjection
-    from llm_guard.input_scanners.prompt_injection import MatchType
-    # Inicializa o scanner. Usa validação rigorosa (FULL) e um threshold de 0.5.
-    scanner = PromptInjection(threshold=0.5, match_type=MatchType.FULL)
-    scanner_available = True
-except ImportError:
-    scanner_available = False
-    st.warning("LLM Guard não está instalado. A validação de Prompt Injection está desabilitada.")
 
-st.set_page_config(page_title="us4ai - RE4AI Assistant", page_icon="🤖", layout="wide")
+@st.cache_resource(show_spinner=False)
+def get_analysis_graph():
+    """Reuse the validated index and local model resources across UI reruns."""
+    return initialize_analysis_graph()
 
-st.title("🤖 us4ai - Engenharia de Requisitos para IA")
 
-# Prepare NIST documents without creating a vector index.
+def show_results(result):
+    status = result.get("status", "failed")
+    message = STATUS_MESSAGES.get(status, STATUS_MESSAGES["failed"])
+    if status == "complete":
+        st.success(message)
+    elif status == "failed":
+        st.error(message)
+    else:
+        st.warning(message)
+    with st.expander("Input used for this analysis"):
+        st.json(result["analysis_input"].model_dump())
+        st.dataframe([
+            {"task_id": key, **task.model_dump()}
+            for key, task in result["ai_task_references"].items()
+        ], hide_index=True)
+
+    evidence_tab, risks_tab, requirements_tab, trace_tab = st.tabs([
+        "Retrieved NIST Evidence", "Contextual AI Risks", "AI-specific Requirements", "Traceability",
+    ])
+    with evidence_tab:
+        st.caption("Source guidance from the NIST AI RMF Playbook. Scores describe retrieval ordering, not risk severity or requirement importance.")
+        st.caption("Vector distance: lower is better. Reranking score: raw relative-ordering score, not a probability.")
+        for item in result.get("retrieved_evidence", []):
+            with st.expander(f"{item.evidence_id} | {item.type} | {item.category}"):
+                st.write({"Vector distance": item.vector_distance, "Reranking score": item.reranking_score})
+                st.text(item.retrieval_text)
+        if not result.get("retrieved_evidence"):
+            st.info("No NIST evidence is available for this analysis.")
+    with risks_tab:
+        st.caption("These are contextual inferences grounded in retrieved NIST guidance, not risks quoted from NIST.")
+        for risk in result.get("contextual_risks", []):
+            st.subheader(f"{risk.risk_id}: {risk.title}")
+            st.write(risk.description)
+            st.write("AI Tasks: " + ", ".join(risk.ai_task_ids))
+            st.write("NIST evidence: " + ", ".join(risk.evidence_ids))
+        if not result.get("contextual_risks"):
+            st.info("No supported contextual risks are available. This is not a risk-free assessment.")
+    with requirements_tab:
+        st.caption("Risk-informed requirements may address the system, governance, human oversight, monitoring, or project processes.")
+        for requirement in result.get("ai_requirements", []):
+            st.subheader(requirement.requirement_id)
+            st.write(requirement.statement)
+            st.write("Contextual risks: " + ", ".join(requirement.risk_ids))
+            st.write("AI Tasks: " + ", ".join(requirement.ai_task_ids))
+            st.write("NIST evidence: " + ", ".join(requirement.evidence_ids))
+            st.write("Rationale: " + requirement.rationale)
+        if not result.get("ai_requirements"):
+            st.info("No validated requirements are available; review any preserved risks and evidence.")
+    with trace_tab:
+        st.caption("Each row is an explicit validated reference. Direct AI Task–NIST Evidence links are not inferred from shared references.")
+        rows = traceability_rows(result)
+        if rows:
+            st.dataframe(rows, hide_index=True, width="stretch")
+        else:
+            st.info("No generated traceability relationships are available.")
+    st.download_button("Download analysis JSON", analysis_export(result), "us4ai_analysis.json", "application/json")
+    st.download_button("Download traceability CSV", traceability_csv(result), "us4ai_traceability.csv", "text/csv")
+
+
+st.title("US4AI")
+st.write("NIST-grounded contextual AI risk inference and risk-informed requirements for research review.")
 with st.sidebar:
-    st.header("NIST Playbook Knowledge")
-    if st.button("Prepare NIST documents", type="primary"):
-        with st.spinner("Validating the authoritative NIST Playbook..."):
-            documents = prepare_nist_documents()
-            st.success(f"Prepared {len(documents)} NIST documents. No vector index was written.")
-    st.info("Source: catalogs/nist_ai_rmf_playbook.json. NIST vector indexing is not implemented yet.")
+    st.header("Knowledge base")
+    st.write("NIST AI RMF Playbook · 72 subcategories")
+    st.caption("The existing index is validated and reused. Incompatible indexes are never silently rebuilt.")
 
-# Main: Input do Usuário
-st.subheader("📝 Formulário de User Story")
-user_story = st.text_area("Descrição da User Story:", "As a customer, I want to issue my water bill via AI chatbot...", height=100)
-criteria = st.text_area("Critérios de Aceite (um por linha):", "The chatbot shall verify customer identity before issuing details.", height=100)
+try:
+    with st.spinner("Initializing and validating the NIST index and local models..."):
+        graph = get_analysis_graph()
+except Exception as error:
+    st.error(f"NIST initialization failed ({type(error).__name__}). Verify the authoritative source and configured NIST_CHROMA_PATH. Run `python -m src.nist_index` for validation. Back up an incompatible index and choose a fresh path; existing data is not automatically deleted.")
+    st.stop()
 
-if st.button("🚀 Processar Análise de Riscos e Requisitos"):
-    # 1. Aplicando o LLM Guard para evitar Prompt Injection na User Story
-    is_valid = True
-    if scanner_available:
-        sanitized_prompt, is_valid, risk_score = scanner.scan(user_story)
-        if not is_valid:
-            st.error(f"⚠️ Alerta de Segurança: Risco de Prompt Injection Detectado! (Score: {risk_score:.2f}). A execução foi bloqueada.")
+if not OPENAI_API_KEY:
+    st.warning("Generation requires OPENAI_API_KEY in the environment or project .env file. Configure it and restart the application.")
 
-    if is_valid:
-        if scanner_available:
-            st.success("✅ Validação de segurança aprovada.")
-            
-        with st.spinner("Analisando grafos de decisão e derivando conhecimento..."):
-            app_graph = build_us4ai_graph()
-            
-            initial_state = {
-                "story_id": "US-001",
-                "description": user_story,
-                "acceptance_criteria": [c.strip() for c in criteria.split("\n") if c.strip()],
-                "retrieved_docs": [],
-                "identified_risks": [],
-                "derived_requirements": []
-            }
-            
-            # Invoca o LangGraph
-            result = app_graph.invoke(initial_state)
+with st.form("analysis_input"):
+    purpose = st.text_area("System Purpose", help="Required: describe what the system is intended to do.")
+    story = st.text_area("User Story", help="Required: describe the stakeholder need.")
+    criteria = st.text_area("Acceptance Criteria (optional, one per line)")
+    st.write("AI Tasks (at least one)")
+    tasks = st.data_editor(
+        [{"category": "", "task": ""}], num_rows="dynamic", hide_index=True,
+        column_config={
+            "category": st.column_config.TextColumn("Category", help="Use your own category; no fixed taxonomy."),
+            "task": st.column_config.TextColumn("Task", help="Describe the AI task."),
+        }, key="ai_tasks_editor", width="stretch",
+    )
+    submitted = st.form_submit_button("Run analysis", disabled=not bool(OPENAI_API_KEY))
 
-            st.success("Análise RAG concluída com sucesso!")
+if submitted:
+    st.session_state.pop("analysis_result", None)
+    try:
+        scenario = input_from_form(purpose, story, criteria, tasks)
+    except ValidationError as error:
+        labels = {"system_purpose": "System Purpose", "user_story": "User Story", "ai_tasks": "AI Tasks"}
+        for issue in error.errors(include_input=False):
+            location = issue["loc"]
+            label = labels.get(location[0], str(location[0]))
+            if location[0] == "ai_tasks" and len(location) > 2:
+                label += f" row {location[1] + 1}, {location[2]}"
+            st.error(f"{label}: provide a non-empty value (at least one complete category/task row is required).")
+    else:
+        try:
+            with st.spinner("Retrieving NIST evidence, inferring contextual risks, and deriving requirements..."):
+                st.session_state["analysis_result"] = run_analysis(graph, scenario)
+        except AnalysisExecutionError as error:
+            st.session_state["analysis_result"] = error.partial_state
+            st.error(f"Analysis failed ({error.error_type}). Check API access and index compatibility. Invalid generated references are rejected rather than repaired. Retry only when ready.")
 
-            # Exibição de Resultados em Abas
-            tab1, tab2, tab3 = st.tabs(["📜 Requisitos Gerados (AIR)", "⚠️ Matriz de Riscos", "🔍 Fontes Recuperadas (RAG)"])
-
-            with tab1:
-                if result.get("derived_requirements"):
-                    df_reqs = pd.DataFrame(result["derived_requirements"])
-                    st.dataframe(df_reqs, use_container_width=True)
-                else:
-                    st.info("Nenhum requisito específico derivado. O LLM pode ter falhado ou os riscos eram insuficientes.")
-
-            with tab2:
-                if result.get("identified_risks"):
-                    st.json(result["identified_risks"])
-                else:
-                    st.info("Nenhum risco de IA associado a este contexto.")
-
-            with tab3:
-                if result.get("retrieved_docs"):
-                    st.json(result["retrieved_docs"])
-                else:
-                    st.info("Nenhum documento de catálogo encontrado. Verifique se o ChromaDB está povoado.")
-
+if "analysis_result" in st.session_state:
+    show_results(st.session_state["analysis_result"])
