@@ -10,7 +10,7 @@ sys.modules["sqlite3"] = pysqlite3
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from src.graph.workflow import build_us4ai_graph
-from src.ingestion import check_and_ingest_catalogs
+from src.ingestion import prepare_nist_documents
 
 # --- LLM Guard Configuration ---
 try:
@@ -27,18 +27,14 @@ st.set_page_config(page_title="us4ai - RE4AI Assistant", page_icon="🤖", layou
 
 st.title("🤖 us4ai - Engenharia de Requisitos para IA")
 
-# Sidebar: Configuração e Ingestão
+# Prepare NIST documents without creating a vector index.
 with st.sidebar:
-    st.header("⚙️ Gestão de Conhecimento")
-    if st.button("📥 Sincronizar Catálogos", type="primary"):
-        with st.spinner("Indexando catálogos (NIST, OWASP, Patterns) no ChromaDB..."):
-            success, msg = check_and_ingest_catalogs()
-            if success:
-                st.success(msg)
-            else:
-                st.error(msg)
-    
-    st.info("Coloque os arquivos JSON na pasta `catalogs/` e clique em Sincronizar. Só é necessário fazer isso uma vez.")
+    st.header("NIST Playbook Knowledge")
+    if st.button("Prepare NIST documents", type="primary"):
+        with st.spinner("Validating the authoritative NIST Playbook..."):
+            documents = prepare_nist_documents()
+            st.success(f"Prepared {len(documents)} NIST documents. No vector index was written.")
+    st.info("Source: catalogs/nist_ai_rmf_playbook.json. NIST vector indexing is not implemented yet.")
 
 # Main: Input do Usuário
 st.subheader("📝 Formulário de User Story")
@@ -64,8 +60,6 @@ if st.button("🚀 Processar Análise de Riscos e Requisitos"):
                 "story_id": "US-001",
                 "description": user_story,
                 "acceptance_criteria": [c.strip() for c in criteria.split("\n") if c.strip()],
-                "is_ai_related": False,
-                "ai_reason": "",
                 "retrieved_docs": [],
                 "identified_risks": [],
                 "derived_requirements": []
@@ -74,30 +68,27 @@ if st.button("🚀 Processar Análise de Riscos e Requisitos"):
             # Invoca o LangGraph
             result = app_graph.invoke(initial_state)
 
-            if not result.get("is_ai_related", False):
-                st.warning(f"🚫 História ignorada. Motivo detectado pelo classificador: {result.get('ai_reason', 'Indefinido')}")
-            else:
-                st.success("Análise RAG concluída com sucesso!")
-                
-                # Exibição de Resultados em Abas
-                tab1, tab2, tab3 = st.tabs(["📜 Requisitos Gerados (AIR)", "⚠️ Matriz de Riscos", "🔍 Fontes Recuperadas (RAG)"])
-                
-                with tab1:
-                    if result.get("derived_requirements"):
-                        df_reqs = pd.DataFrame(result["derived_requirements"])
-                        st.dataframe(df_reqs, use_container_width=True)
-                    else:
-                        st.info("Nenhum requisito específico derivado. O LLM pode ter falhado ou os riscos eram insuficientes.")
-                
-                with tab2:
-                    if result.get("identified_risks"):
-                        st.json(result["identified_risks"])
-                    else:
-                        st.info("Nenhum risco de IA associado a este contexto.")
-                        
-                with tab3:
-                    if result.get("retrieved_docs"):
-                        st.json(result["retrieved_docs"])
-                    else:
-                        st.info("Nenhum documento de catálogo encontrado. Verifique se o ChromaDB está povoado.")
+            st.success("Análise RAG concluída com sucesso!")
+
+            # Exibição de Resultados em Abas
+            tab1, tab2, tab3 = st.tabs(["📜 Requisitos Gerados (AIR)", "⚠️ Matriz de Riscos", "🔍 Fontes Recuperadas (RAG)"])
+
+            with tab1:
+                if result.get("derived_requirements"):
+                    df_reqs = pd.DataFrame(result["derived_requirements"])
+                    st.dataframe(df_reqs, use_container_width=True)
+                else:
+                    st.info("Nenhum requisito específico derivado. O LLM pode ter falhado ou os riscos eram insuficientes.")
+
+            with tab2:
+                if result.get("identified_risks"):
+                    st.json(result["identified_risks"])
+                else:
+                    st.info("Nenhum risco de IA associado a este contexto.")
+
+            with tab3:
+                if result.get("retrieved_docs"):
+                    st.json(result["retrieved_docs"])
+                else:
+                    st.info("Nenhum documento de catálogo encontrado. Verifique se o ChromaDB está povoado.")
 

@@ -26,3 +26,6 @@ Thumbs.db
 # Logs e temporários
 *.log
 *.tmp
+
+# Generated NIST vector index
+data/chroma_nist/

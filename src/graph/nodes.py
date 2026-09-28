@@ -1,33 +1,11 @@
 import instructor
 from openai import OpenAI
-from pydantic import BaseModel
 from src.schemas import OutputRisks, OutputRequirements
 from src.retriever import HybridRetriever
 from src.config import OPENAI_API_KEY
 
 # Usamos o instructor para garantir as respostas estruturadas Pydantic nativamente
 client = instructor.from_openai(OpenAI(api_key=OPENAI_API_KEY))
-
-class AIDetectorOutput(BaseModel):
-    is_ai_related: bool
-    reason: str
-
-def detect_ai_node(state: dict) -> dict:
-    """Nó 1: Avalia rapidamente se a User Story envolve inteligência artificial."""
-    story = state.get("description", "")
-    
-    prompt = f"Analyze if this user story requires Artificial Intelligence (LLMs, ML, Chatbots, Predictors, etc): {story}"
-    
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        response_model=AIDetectorOutput,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    
-    return {
-        "is_ai_related": response.is_ai_related,
-        "ai_reason": response.reason
-    }
 
 def risk_identification_node(state: dict) -> dict:
     """Nó 2: Recupera catálogos e identifica riscos ancorados no conhecimento."""
