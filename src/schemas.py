@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field
-from typing import List
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from typing import Annotated, List
 
 class KnowledgeSource(BaseModel):
     knowledge_item_id: str
@@ -30,3 +30,26 @@ class OutputRequirements(BaseModel):
 class OutputRisks(BaseModel):
     story_id: str
     identified_risks: List[IdentifiedRisk] = Field(default_factory=list)
+
+
+NonEmptyInputText = Annotated[str, StringConstraints(strict=True, min_length=1, pattern=r"\S")]
+
+
+class AITask(BaseModel):
+    """An AI task described structurally, without imposing a taxonomy."""
+
+    model_config = ConfigDict(strict=True)
+
+    category: NonEmptyInputText
+    task: NonEmptyInputText
+
+
+class US4AIAnalysisInput(BaseModel):
+    """Input contract for a future Playbook-grounded analysis."""
+
+    model_config = ConfigDict(strict=True)
+
+    system_purpose: NonEmptyInputText
+    user_story: NonEmptyInputText
+    acceptance_criteria: list[str] = Field(default_factory=list)
+    ai_tasks: list[AITask] = Field(min_length=1)
