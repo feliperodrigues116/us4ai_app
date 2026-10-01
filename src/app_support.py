@@ -16,10 +16,12 @@ from src.nist_index import build_nist_index, open_nist_store, validate_nist_inde
 from src.nist_playbook import PLAYBOOK_PATH
 from src.retriever import NistVectorRetriever
 from src.schemas import US4AIAnalysisInput
+from src.failure_diagnostics import sanitize_error_message
 from src.traceability import reference_ai_tasks, validate_ai_requirements
 
 
 STATUS_MESSAGES = {
+    "no_treatment_evidence": "No treatment evidence was retrieved. Risks are preserved; requirement generation was skipped.",
     "no_evidence": "No NIST evidence was retrieved for this analysis. Generation could not proceed.",
     "no_supported_risks": "No sufficiently supported contextual risks were produced from the retrieved evidence. This does not establish that the scenario is risk-free.",
     "no_requirements": "Contextual risks were inferred, but no justified requirements were produced. Review the preserved risks and evidence.",
@@ -68,12 +70,22 @@ def run_analysis(graph, scenario: US4AIAnalysisInput) -> dict:
         "retrieved_evidence": [], "nist_records": {}, "contextual_risks": [],
         "ai_requirements": [],
     }
+    active_stage = "risk_retrieval"
+    next_stage = {
+        "retrieve_nist_evidence": "risk_generation",
+        "infer_contextual_risks": "treatment_retrieval",
+        "retrieve_treatment_evidence": "requirement_generation",
+    }
     try:
         for update in graph.stream({"analysis_input": scenario}, stream_mode="updates"):
-            for values in update.values():
+            for node, values in update.items():
                 if values:
                     result.update(values)
+                active_stage = next_stage.get(node, active_stage)
     except Exception as error:
+        result["failed_stage"] = active_stage
+        result["error_type"] = type(error).__name__
+        result["error_message"] = sanitize_error_message(error)
         result["status"] = "failed"
         result["status_message"] = STATUS_MESSAGES["failed"]
         raise AnalysisExecutionError(result, type(error).__name__) from None
@@ -84,7 +96,8 @@ def traceability_rows(result: dict) -> list[dict[str, str]]:
     """Render only explicit directed references; never infer task-evidence pairs."""
     scenario = result["analysis_input"]
     risks, requirements = result.get("contextual_risks", []), result.get("ai_requirements", [])
-    validate_ai_requirements(requirements, risks, scenario, result.get("retrieved_evidence", []))
+    validate_ai_requirements(requirements, risks, scenario, result.get("retrieved_evidence", []),
+                             treatment_evidence=result.get("treatment_evidence"))
     rows = []
 
     def add(source_type, source_id, relation, target_type, target_id):
@@ -133,6 +146,11 @@ def analysis_export(result: dict) -> str:
             "candidate_k": 15, "top_k": 5,
         },
     }
+    if "treatment_evidence" in result:
+        # Additive fields keep risk evidence semantics and resolve treatment-only citations.
+        payload["treatment_evidence"] = [item.model_dump() for item in result["treatment_evidence"]]
+        payload["treatment_records"] = {key: record.model_dump(by_alias=True)
+                                        for key, record in result.get("treatment_records", {}).items()}
     return json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False)
 
 

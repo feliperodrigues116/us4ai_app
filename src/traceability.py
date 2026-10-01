@@ -43,13 +43,16 @@ def validate_contextual_risks(
 def validate_ai_requirements(
     requirements: list[AISpecificRequirement], risks: list[ContextualAIRisk],
     scenario: US4AIAnalysisInput, evidence: list[RetrievedNistEvidence],
+    *, treatment_evidence: list[RetrievedNistEvidence] | None = None,
 ) -> None:
     """Validate requirements against the actual scenario, evidence, and risks."""
     validate_contextual_risks(risks, scenario, evidence)
     _unique([requirement.requirement_id for requirement in requirements], "requirement")
     risk_ids = {risk.risk_id for risk in risks}
     task_ids = set(reference_ai_tasks(scenario))
-    evidence_ids = {item.evidence_id for item in evidence}
+    # Omitted treatment evidence supports validation of legacy single-stage artifacts.
+    allowed = evidence if treatment_evidence is None else treatment_evidence
+    evidence_ids = _unique([item.evidence_id for item in allowed], "treatment evidence")
     for requirement in requirements:
         _references(requirement.risk_ids, risk_ids, "contextual risk")
         _references(requirement.ai_task_ids, task_ids, "AI task")

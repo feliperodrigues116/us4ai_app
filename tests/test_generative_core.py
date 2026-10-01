@@ -63,6 +63,7 @@ def state():
     return {
         "analysis_input": scenario(), "retrieved_evidence": [item],
         "nist_records": {item.evidence_id: item.resolve_record()},
+        "treatment_evidence": [item], "treatment_records": {item.evidence_id: item.resolve_record()},
         "contextual_risks": [risk()], "ai_requirements": [],
     }
 
@@ -216,14 +217,14 @@ class WorkflowTests(unittest.TestCase):
 
     def test_graph_retrieves_first_and_preserves_all_typed_artifacts(self):
         events = []
-        self.retriever.retrieve.side_effect = lambda data: events.append("retrieve") or [evidence()]
+        self.retriever.retrieve.side_effect = lambda data, **kwargs: events.append("retrieve") or [evidence()]
         outputs = iter([ContextualRisksOutput(contextual_risks=[risk()]), AIRequirementsOutput(ai_requirements=[requirement()])])
         def generate(**kwargs):
             events.append(kwargs["response_model"].__name__)
             return next(outputs)
         self.client.chat.completions.create.side_effect = generate
         result = self.run_graph()
-        self.assertEqual(events, ["retrieve", "ContextualRisksOutput", "AIRequirementsOutput"])
+        self.assertEqual(events, ["retrieve", "ContextualRisksOutput", "retrieve", "AIRequirementsOutput"])
         self.assertEqual(result["analysis_input"], scenario())
         self.assertEqual(result["retrieved_evidence"], [evidence()])
         self.assertEqual(result["contextual_risks"], [risk()])
@@ -231,7 +232,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(result["nist_records"]["GOVERN 1.1"], evidence().resolve_record())
         self.assertEqual(result["ai_task_references"], reference_ai_tasks(scenario()))
         self.assertEqual(result["status"], "complete")
-        self.retriever.retrieve.assert_called_once_with(scenario())
+        self.assertEqual(self.retriever.retrieve.call_count, 2)
+        self.assertEqual(self.retriever.retrieve.call_args_list[0].args, (scenario(),))
 
     def test_no_evidence_skips_both_generation_stages(self):
         self.retriever.retrieve.return_value = []

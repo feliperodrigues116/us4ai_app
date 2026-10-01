@@ -5,8 +5,8 @@ US4AI is a research prototype for deriving risk-informed requirements for AI-ena
 ## Conceptual pipeline
 
 System Purpose + User Story + optional Acceptance Criteria + AI Tasks
-→ NIST evidence retrieval → contextual AI risk inference
-→ AI-specific requirement derivation → validated references and traceability.
+→ risk-oriented NIST retrieval → contextual AI risk inference
+→ treatment-oriented NIST retrieval → AI-specific requirement derivation → validated references and traceability.
 
 These are three distinct artifacts:
 
@@ -44,13 +44,34 @@ Structured `RetrievedNistEvidence` preserves title, function, category, retrieva
 
 ## Generation and traceability
 
-LangGraph runs `retrieve_nist_evidence` → `infer_contextual_risks` → `derive_ai_requirements`. Generation uses OpenAI + Instructor with Pydantic outputs, `gpt-4o-mini`, temperature 0, Instructor `max_retries=1`, and SDK `max_retries=0`.
+LangGraph runs `retrieve_nist_evidence` → `infer_contextual_risks` → `retrieve_treatment_evidence` → `derive_ai_requirements`. Generation uses OpenAI + Instructor with Pydantic outputs, `gpt-4o-mini`, temperature 0, Instructor `max_retries=1`, and SDK `max_retries=0`.
 
 Prompts distinguish SOURCE, INFERENCE, and DERIVATION. They provide the complete scenario and selected substantive fields of the retrieved source records, including documentation questions. Reference bibliographies are not treated as guidance, and repeated retrieval text is omitted from generation context. Prompts prohibit fabricated quotations and unsupported implementation details. Retrieval relevance alone does not justify a risk: descriptions must explain concrete scenario-to-harm connections, and retrieved evidence may remain unused. Requirements translate supported risks into system-level controls rather than paraphrasing Suggested Actions.
 
 Deterministic validation rejects duplicate risk/requirement IDs, empty required references, unknown tasks, unknown evidence, and unknown addressed risks. It does not silently repair invalid references. Duplicate references and requirement task links outside the addressed risks are rejected. A narrow statement-subject check rejects explicit organization/project-team/stakeholder/management/developer recommendations; it is not a semantic proof of implementability. The traceability table contains only explicit edges from the validated outputs: task/risk, evidence/risk, risk/requirement, task/requirement, and evidence/requirement. It does not invent direct task/evidence relationships or combinations of independent references.
 
 The graph distinguishes no evidence, no sufficiently supported risks, and no justified requirements. None establishes that the scenario is risk-free. The UI preserves validated earlier stages if a later stage fails.
+
+The treatment query deterministically combines the unchanged scenario query with all
+validated risk IDs, titles, descriptions, and associated task descriptions, prefixed
+with neutral treatment intent. It does not copy risk citation IDs into the query.
+One treatment search covers all risks, using the same retriever, collection, embedding,
+reranker, 15 candidates, and Top-5 limit. A complete successful path performs two
+vector searches, two rerankings, and two generation calls. No risks skips treatment
+retrieval and requirements. Empty treatment evidence returns `no_treatment_evidence`
+and never falls back to risk evidence.
+
+Risks are validated against risk Top-K; requirements are validated against treatment
+Top-K. These sets may overlap or be disjoint. The validator's optional treatment
+argument supports legacy single-stage artifacts when omitted; the new graph always
+passes its explicit treatment set, including an empty set when applicable.
+
+The collapsed Retrieval Diagnostics section and separate diagnostic JSON expose both
+queries, candidate/reranking positions and scores, final sets, stage-specific usage,
+and cross-stage membership. Legacy top-level diagnostic fields continue describing
+the risk retrieval. Membership is not evidence usage or semantic relevance. The graph
+resource cache version changes with this two-stage contract; completed session results
+retain their own diagnostics across reruns.
 
 ## Environment and installation
 
@@ -92,7 +113,7 @@ streamlit run app.py
 
 Enter the complete scenario and submit **Run analysis**. The four result tabs show source evidence, contextual risks, requirements, and traceability. The displayed input is the submitted scenario, even if the form is subsequently edited.
 
-Download the JSON analysis for later empirical evaluation. It contains the input, task-reference mapping, evidence and resolved source records, inferred risks, derived requirements, explicit traceability, status, and allowlisted model/source metadata. An incomplete analysis is marked as such. A separate CSV contains the traceability edges. No database or environment secrets are exported.
+Download the JSON analysis for later empirical evaluation. It contains the input, task-reference mapping, evidence and resolved source records, inferred risks, derived requirements, explicit traceability, status, and allowlisted model/source metadata. An incomplete analysis is marked as such. The existing `retrieved_evidence` and `nist_records` fields retain risk-retrieval semantics. Two-stage results add `treatment_evidence` and `treatment_records` so treatment-only citations remain resolvable; existing fields and their shapes are unchanged. Diagnostics are excluded. A separate CSV retains the same traceability columns and explicit inference/derivation edges. No database or environment secrets are exported.
 
 The inactive legacy optional input scanner is not part of this UI. The current conservative prompts and deterministic reference checks are not a comprehensive prompt-injection defense.
 

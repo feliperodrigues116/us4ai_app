@@ -1,5 +1,7 @@
 """Streamlit interface for the NIST-grounded US4AI research prototype."""
 
+import json
+
 import streamlit as st
 from pydantic import ValidationError
 
@@ -7,6 +9,7 @@ from src.app_support import (
     AnalysisExecutionError, STATUS_MESSAGES, analysis_export, initialize_analysis_graph,
     input_from_form, run_analysis, traceability_csv, traceability_rows,
 )
+from src.retrieval_diagnostics import diagnostic_report
 from src.config import OPENAI_API_KEY
 from src.ai_task_catalog import AI_TASK_CATALOG, tasks_for_group, validate_catalog_selection
 
@@ -15,7 +18,7 @@ st.set_page_config(page_title="US4AI | NIST-grounded requirements", layout="wide
 
 
 @st.cache_resource(show_spinner=False)
-def get_analysis_graph():
+def get_analysis_graph(diagnostics_version):
     """Reuse the validated index and local model resources across UI reruns."""
     return initialize_analysis_graph()
 
@@ -27,6 +30,13 @@ def show_results(result):
         st.success(message)
     elif status == "failed":
         st.error(message)
+        if result.get("failed_stage"):
+            stage = result["failed_stage"].replace("_", " ").title()
+            st.error(f"Analysis failed during: {stage}")
+            st.text("Error: " + result["error_type"])
+            st.text("Reason: " + result["error_message"])
+            if " references" in result["error_message"]:
+                st.caption("Invalid generated references are rejected rather than silently repaired.")
     else:
         st.warning(message)
     with st.expander("Input used for this analysis"):
@@ -75,6 +85,41 @@ def show_results(result):
             st.dataframe(rows, hide_index=True, width="stretch")
         else:
             st.info("No generated traceability relationships are available.")
+    with st.expander("Retrieval Diagnostics", expanded=False):
+        report = diagnostic_report(result)
+        if report is None:
+            st.info("Retrieval diagnostics are unavailable for this analysis.")
+        else:
+            st.caption("Structural observations only; evidence usage does not establish semantic relevance. Partial analyses show usage from preserved validated outputs.")
+            st.write("Analysis status: " + report["analysis_status"])
+            for label, stage in (("Risk Retrieval", report["risk_retrieval"]),
+                                 ("Treatment Retrieval", report["treatment_retrieval"])):
+                st.write(label)
+                if stage is None:
+                    st.info("This retrieval stage has no captured diagnostics.")
+                    continue
+                st.write("Retrieval Query")
+                st.code(stage["retrieval_query"], language=None)
+                st.write("Vector Candidates")
+                st.dataframe(stage["vector_candidates"], hide_index=True)
+                st.write("Reranked Candidates")
+                st.dataframe(stage["reranked_candidates"], hide_index=True)
+                st.write("Final Top-K")
+                st.dataframe([
+                    {"final_rank": rank, "evidence_id": identity}
+                    for rank, identity in enumerate(stage["final_evidence_ids"], start=1)
+                ], hide_index=True)
+                st.write("Evidence Usage")
+                st.dataframe(stage["evidence_usage"], hide_index=True)
+                st.write({"used_evidence_ids": stage["used_evidence_ids"],
+                          "unused_evidence_ids": stage["unused_evidence_ids"]})
+            st.write("Evidence Usage / Cross-stage Summary")
+            st.json(report["cross_stage_summary"])
+            st.download_button(
+                "Download retrieval diagnostics JSON",
+                json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False),
+                "us4ai_retrieval_diagnostics.json", "application/json",
+            )
     st.download_button("Download analysis JSON", analysis_export(result), "us4ai_analysis.json", "application/json")
     st.download_button("Download traceability CSV", traceability_csv(result), "us4ai_traceability.csv", "text/csv")
 
@@ -88,7 +133,7 @@ with st.sidebar:
 
 try:
     with st.spinner("Initializing and validating the NIST index and local models..."):
-        graph = get_analysis_graph()
+        graph = get_analysis_graph(diagnostics_version=2)
 except Exception as error:
     st.error(f"NIST initialization failed ({type(error).__name__}). Verify the authoritative source and configured NIST_CHROMA_PATH. Run `python -m src.nist_index` for validation. Back up an incompatible index and choose a fresh path; existing data is not automatically deleted.")
     st.stop()
@@ -156,7 +201,7 @@ if submitted:
                 st.session_state["analysis_result"] = run_analysis(graph, scenario)
         except AnalysisExecutionError as error:
             st.session_state["analysis_result"] = error.partial_state
-            st.error(f"Analysis failed ({error.error_type}). Check API access and index compatibility. Invalid generated references are rejected rather than repaired. Retry only when ready.")
+
 
 if "analysis_result" in st.session_state:
     show_results(st.session_state["analysis_result"])
